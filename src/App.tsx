@@ -49,7 +49,7 @@ export default function App() {
       setConnectionMessage("⏳ Scanning for QP Earbuds over BLE...");
       
       const device = await (navigator as any).bluetooth.requestDevice({
-        filters: [{ services: ['battery_service'] }],
+        acceptAllDevices: true,
         optionalServices: ['battery_service']
       });
 
@@ -191,11 +191,10 @@ export default function App() {
           <input 
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            disabled={!isConnected}
-            placeholder={isConnected ? "[NOW] ... or [KEIRA] ..." : "Please connect your QP Earbuds first to start talking..."}
-            className="flex-grow p-3 bg-transparent outline-none text-sm placeholder:text-slate-600 disabled:cursor-not-allowed"
+            placeholder={isConnected ? "[NOW] ... or [KEIRA] ..." : "Please connect your QP Earbuds (or type to test)..."}
+            className="flex-grow p-3 bg-transparent outline-none text-sm placeholder:text-slate-600"
           />
-          <button onClick={sendMessage} disabled={!isConnected || loading} className="p-3 bg-indigo-600/80 hover:bg-indigo-600 disabled:bg-slate-700 disabled:opacity-50 rounded-xl transition-colors"><Send size={18} /></button>
+          <button onClick={sendMessage} disabled={loading} className="p-3 bg-indigo-600/80 hover:bg-indigo-600 disabled:bg-slate-700 disabled:opacity-50 rounded-xl transition-colors"><Send size={18} /></button>
         </div>
       </div>
     </div>
