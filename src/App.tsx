@@ -46,12 +46,22 @@ export default function App() {
 
     try {
       setIsScanning(true);
-      setConnectionMessage("⏳ Scanning for QP Earbuds over BLE...");
       
-      const device = await (navigator as any).bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: ['battery_service']
-      });
+      const bluetooth = (navigator as any).bluetooth;
+      let device;
+      
+      // Try to get already authorized devices first
+      const devices = await bluetooth.getDevices();
+      if (devices.length > 0) {
+        setConnectionMessage("🔄 Detected existing device, connecting...");
+        device = devices[0]; // Connect to the first authorized device found
+      } else {
+        setConnectionMessage("⏳ Scanning for QP Earbuds over BLE...");
+        device = await bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: ['battery_service']
+        });
+      }
 
       const server = await device.gatt!.connect();
       const service = await server.getPrimaryService('battery_service');
