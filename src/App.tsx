@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Send, Wifi, WifiOff, Zap, Globe, AudioLines } from 'lucide-react';
 
 export default function App() {
@@ -16,6 +16,34 @@ export default function App() {
   const [connectionMessage, setConnectionMessage] = useState("❌ Earbuds Disconnected");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [currentlySpeakingId, setCurrentlySpeakingId] = useState<number | null>(null);
+  const deviceRef = useRef<any>(null);
+
+  useEffect(() => {
+    const autoConnect = async () => {
+      const bluetooth = (navigator as any).bluetooth;
+      if (bluetooth && typeof bluetooth.getDevices === 'function') {
+        try {
+          const devices = await bluetooth.getDevices();
+          if (devices.length > 0) {
+            connectEarbuds(devices[0]);
+          }
+        } catch (e) {
+          console.warn("Auto-connect failed", e);
+        }
+      }
+    };
+    autoConnect();
+  }, []);
+
+  const disconnectEarbuds = () => {
+      if (deviceRef.current && deviceRef.current.gatt.connected) {
+        deviceRef.current.gatt.disconnect();
+      }
+      deviceRef.current = null;
+      setIsConnected(false);
+      setBattery(null);
+      setConnectionMessage("❌ Earbuds Disconnected");
+  };
 
   const speak = (text: string, messageId: number) => {
       const synth = window.speechSynthesis;
@@ -38,7 +66,7 @@ export default function App() {
       synth.speak(utterance);
   }
 
-  const connectEarbuds = async () => {
+  const connectEarbuds = async (existingDevice?: any) => {
     if (!('bluetooth' in navigator)) {
       setConnectionMessage("❌ Web Bluetooth not supported.");
       return;
@@ -48,15 +76,14 @@ export default function App() {
       setIsScanning(true);
       
       const bluetooth = (navigator as any).bluetooth;
-      let device;
+      let device = existingDevice;
       
-      // Try to get already authorized devices first
-      if (typeof bluetooth.getDevices === 'function') {
+      if (!device && typeof bluetooth.getDevices === 'function') {
         try {
           const devices = await bluetooth.getDevices();
           if (devices.length > 0) {
             setConnectionMessage("🔄 Detected existing device, connecting...");
-            device = devices[0]; // Connect to the first authorized device found
+            device = devices[0];
           }
         } catch (e) {
           console.warn("getDevices API call failed (might be unsupported or require user interaction), proceeding to requestDevice", e);
@@ -71,6 +98,7 @@ export default function App() {
         });
       }
 
+      deviceRef.current = device;
       const server = await device.gatt!.connect();
       const service = await server.getPrimaryService('battery_service');
       const characteristic = await service.getCharacteristic('battery_level');
@@ -85,6 +113,7 @@ export default function App() {
         setIsConnected(false);
         setBattery(null);
         setConnectionMessage("❌ Earbuds Disconnected");
+        deviceRef.current = null;
       });
     } catch (error: any) {
       console.error("Bluetooth connection failed:", error);
@@ -95,6 +124,7 @@ export default function App() {
       }
       setIsConnected(false);
       setBattery(null);
+      deviceRef.current = null;
     } finally {
       setIsScanning(false);
     }
@@ -159,7 +189,9 @@ export default function App() {
             </div>
         </div>
         <div className="flex gap-4">
-            {!isConnected && <button onClick={connectEarbuds} disabled={isScanning} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-mono transition-colors">🔗 {isScanning ? "Scanning..." : "Connect Earbuds"}</button>}
+            <button onClick={isConnected ? disconnectEarbuds : () => connectEarbuds()} disabled={isScanning} className={`${isConnected ? 'bg-green-600/80 hover:bg-green-600' : 'bg-indigo-600 hover:bg-indigo-500'} text-white px-4 py-2 rounded-xl text-xs font-mono transition-colors`}>
+                {isConnected ? "🔋 Earbuds Active (Click to Disconnect)" : (isScanning ? "Scanning..." : "🔗 Connect Earbuds")}
+            </button>
             <span className="flex items-center gap-2 text-xs text-slate-400 font-mono"><Wifi size={14} /> ONLINE KEIRA</span>
             <span className="flex items-center gap-2 text-xs text-slate-400 font-mono"><WifiOff size={14} /> OFFLINE NOW</span>
         </div>
