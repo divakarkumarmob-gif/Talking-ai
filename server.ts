@@ -45,13 +45,22 @@ async function startServer() {
         },
       });
 
-    clientWs.on('message', (data: any) => {
-        const payload = JSON.parse(data.toString());
-        if (payload.audio) {
-            session.sendRealtimeInput({
-                audio: { data: payload.audio, mimeType: "audio/pcm;rate=24000" },
-            });
+    clientWs.on('message', async (data: any) => {
+        try {
+            const payload = JSON.parse(data.toString());
+            if (payload.audio) {
+                await session.sendRealtimeInput({
+                    audio: { data: payload.audio, mimeType: "audio/pcm;rate=24000" },
+                });
+            }
+        } catch (err) {
+            console.error('Error handling message:', err);
         }
+    });
+
+    clientWs.on('error', (err) => {
+        console.error('WebSocket Client Error:', err);
+        session.close();
     });
 
     clientWs.on('close', () => {

@@ -18,23 +18,85 @@ export default function App() {
   const [currentlySpeakingId, setCurrentlySpeakingId] = useState<number | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const deviceRef = useRef<any>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);    // Track streaming state
+  const aiStreamingRef = useRef(false);
+  const aiStreamingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const audioQueueRef = useRef<AudioBuffer[]>([]);
+  const nextStartTimeRef = useRef(0);
+
+  const playNextChunk = () => {
+    if (audioQueueRef.current.length === 0 || !audioCtxRef.current) return;
+    const buffer = audioQueueRef.current.shift();
+    if (!buffer) return;
+    const source = audioCtxRef.current.createBufferSource();
+    source.buffer = buffer;
+
+    // Add high-pass filter to thin out the voice
+    const highPass = audioCtxRef.current.createBiquadFilter();
+    highPass.type = 'highpass';
+    highPass.frequency.value = 750; // Even thinner voice
+
+    source.connect(highPass);
+    highPass.connect(audioCtxRef.current.destination);
+    
+    // Schedule based on previous chunk finish time
+    const startTime = Math.max(audioCtxRef.current.currentTime, nextStartTimeRef.current);
+    source.start(startTime);
+    nextStartTimeRef.current = startTime + buffer.duration;
+  };
 
   const startAudioStreaming = (socket: WebSocket) => {
-    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-        const inputCtx = new AudioContext({ sampleRate: 24000 });
+    navigator.mediaDevices.getUserMedia({ 
+      audio: { 
+        echoCancellation: true, 
+        noiseSuppression: true, 
+        autoGainControl: true 
+      } 
+    }).then(stream => {
+        const inputCtx = new AudioContext({ sampleRate: 16000 });
         const source = inputCtx.createMediaStreamSource(stream);
+        
+        // Low-pass filter to reduce high-frequency noise
+        const lowPass = inputCtx.createBiquadFilter();
+        lowPass.type = 'lowpass';
+        lowPass.frequency.value = 5000; 
+        lowPass.Q.value = 1;
+
+        // High-pass filter to remove low-frequency rumble
+        const highPass = inputCtx.createBiquadFilter();
+        highPass.type = 'highpass';
+        highPass.frequency.value = 200; 
+        
         const processor = inputCtx.createScriptProcessor(4096, 1, 1);
-        source.connect(processor);
+        
+        source.connect(highPass);
+        highPass.connect(lowPass);
+        lowPass.connect(processor);
         processor.connect(inputCtx.destination);
         
         processor.onaudioprocess = (e) => {
+            // Mute mic if AI is streaming to prevent feedback loop
+            if (aiStreamingRef.current) return;
+            
             const float32 = e.inputBuffer.getChannelData(0);
+
+            // Noise Gate Logic - Simplified for performance
+            const threshold = 0.02; 
+            
             const int16 = new Int16Array(float32.length);
             for (let i = 0; i < float32.length; i++) {
-                int16[i] = float32[i] * 32768;
+                // Apply gate and simple normalization
+                const sample = Math.abs(float32[i]) < threshold ? 0 : float32[i];
+                int16[i] = Math.max(-1, Math.min(1, sample)) * 32767;
             }
-            const base64 = btoa(String.fromCharCode(...new Uint8Array(int16.buffer)));
+            // Safe Base64 conversion without spread operator
+            const uint8Array = new Uint8Array(int16.buffer);
+            let binary = '';
+            for (let i = 0; i < uint8Array.length; i++) {
+                binary += String.fromCharCode(uint8Array[i]);
+            }
+            const base64 = btoa(binary);
+
             if (socket.readyState === WebSocket.OPEN) {
                 socket.send(JSON.stringify({ audio: base64 }));
             }
@@ -60,27 +122,43 @@ export default function App() {
     socket.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
         if (msg.audio) {
+            // Stop any local TTS if server sends audio
+            window.speechSynthesis.cancel();
+            setIsSpeaking(false);
+            setCurrentlySpeakingId(null);
+
+            // Update AI streaming state
+            aiStreamingRef.current = true;
+            if (aiStreamingTimeoutRef.current) clearTimeout(aiStreamingTimeoutRef.current);
+            aiStreamingTimeoutRef.current = setTimeout(() => aiStreamingRef.current = false, 500);
+
             // Play back PCM audio chunk
             const audioData = Uint8Array.from(atob(msg.audio), c => c.charCodeAt(0));
-            if (!audioCtxRef.current) audioCtxRef.current = new AudioContext({ sampleRate: 24000 });
+            if (!audioCtxRef.current) {
+                audioCtxRef.current = new AudioContext({ sampleRate: 16000 });
+                nextStartTimeRef.current = audioCtxRef.current.currentTime;
+            }
+            if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
             
-            const buffer = audioCtxRef.current.createBuffer(1, audioData.length / 2, 24000);
+            const buffer = audioCtxRef.current.createBuffer(1, audioData.length / 2, 16000);
             const channel = buffer.getChannelData(0);
             const view = new DataView(audioData.buffer);
             for (let i = 0; i < audioData.length / 2; i++) {
                 channel[i] = view.getInt16(i * 2, true) / 32768;
             }
-            const source = audioCtxRef.current.createBufferSource();
-            source.buffer = buffer;
-            source.connect(audioCtxRef.current.destination);
-            source.start();
+            
+            audioQueueRef.current.push(buffer);
+            playNextChunk();
         }
     };
     
     setWs(socket);
 
+
     return () => socket.close();
   }, []);
+
+
 
   useEffect(() => {
     const autoConnect = async () => {
@@ -111,10 +189,17 @@ export default function App() {
 
   const speak = (text: string, messageId: number) => {
       const synth = window.speechSynthesis;
+      synth.cancel(); // Stop any currently speaking text
       const utterance = new SpeechSynthesisUtterance(text);
       const voices = synth.getVoices();
-      // Try to find a good voice (English-Indian if possible)
-      const voice = voices.find(v => v.lang.includes('en-IN')) || voices.find(v => v.lang.includes('en-US')) || voices[0];
+      
+      // Prioritize clear English voice. Filter out all non-English voices.
+      const englishVoices = voices.filter(v => v.lang.startsWith('en-'));
+      // Prefer US or GB if available, otherwise any English voice, otherwise first voice.
+      const voice = englishVoices.find(v => v.lang === 'en-US') || 
+                    englishVoices.find(v => v.lang === 'en-GB') || 
+                    englishVoices[0] || 
+                    voices[0];
       utterance.voice = voice;
       
       utterance.onstart = () => {
