@@ -1,21 +1,63 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, LiveServerMessage, Modality } from "@google/genai";
+import { WebSocketServer } from 'ws';
+import http from 'http';
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
   app.use(express.json());
 
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server });
+
   // GEMINI setup
   const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY || "",
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      }
-    }
+  });
+
+  wss.on('connection', async (clientWs) => {
+    console.log('Client connected for Live Audio');
+    
+    // Connect to Gemini Live
+    const session = await ai.live.connect({
+        model: "gemini-3.1-flash-live-preview",
+        callbacks: {
+          onmessage: (message: LiveServerMessage) => {
+            // Forward audio to client
+            const audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
+            if (audio) {
+                clientWs.send(JSON.stringify({ audio }));
+            }
+            if (message.serverContent?.interrupted) {
+              clientWs.send(JSON.stringify({ interrupted: true }));
+            }
+          },
+        },
+        config: {
+          responseModalities: [Modality.AUDIO], // Must be [Modality.AUDIO]
+          speechConfig: {
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
+          },
+          systemInstruction: "You are Keira, a friendly, natural-sounding AI assistant. Keep responses conversational and fluid. Speak naturally like a human.",
+        },
+      });
+
+    clientWs.on('message', (data: any) => {
+        const payload = JSON.parse(data.toString());
+        if (payload.audio) {
+            session.sendRealtimeInput({
+                audio: { data: payload.audio, mimeType: "audio/pcm;rate=16000" },
+            });
+        }
+    });
+
+    clientWs.on('close', () => {
+        session.close();
+        console.log('Client disconnected from Live Audio');
+    });
   });
 
   app.post("/api/chat", async (req, res) => {
@@ -25,13 +67,19 @@ async function startServer() {
       return res.status(400).json({ error: "Message is required" });
     }
 
-    if (message.startsWith("[NOW]")) {
-        const responseText = `[MODE: OFFLINE NOW] -> Sahi hai bhai, system ready hai. (${message.substring(5).trim()})`;
+    const lowerMessage = message.toLowerCase();
+    
+    // Improved detection logic
+    const isNow = lowerMessage.includes("[now]") || lowerMessage.startsWith("now");
+    const isKeira = lowerMessage.includes("[keira]") || lowerMessage.includes("keira");
+
+    if (isNow) {
+        const responseText = `[MODE: OFFLINE NOW] -> Sahi hai bhai, system ready hai. (${message})`;
         return res.json({ response: responseText });
-    } else if (message.startsWith("[KEIRA]")) {
+    } else if (isKeira) {
         // Online search mode
         try {
-            const prompt = `Simulate an advanced online search, acting as KEIRA, a smart assistant, answering in Hinglish. Message: ${message.substring(7).trim()}`;
+            const prompt = `Simulate an advanced online search, acting as KEIRA, a smart assistant, answering in Hinglish. Message: ${message}`;
             
             let response: any;
             
@@ -70,7 +118,7 @@ async function startServer() {
                ?.filter((chunk: any) => chunk.web?.uri)
                .map((chunk: any) => ({ title: chunk.web?.title || 'Source', url: chunk.web?.uri! }));
             
-            const responseText = `[MODE: ONLINE KEIRA] -> ` + response.text;
+            const responseText = `[MODE: ONLINE KEIRA] -> ` + response.text(); // Fixed: .text() if the SDK uses a method
             return res.json({ response: responseText, citations });
         } catch (e) {
             console.error("KEIRA error:", e);
@@ -96,7 +144,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

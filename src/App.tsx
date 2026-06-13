@@ -16,7 +16,66 @@ export default function App() {
   const [connectionMessage, setConnectionMessage] = useState("❌ Earbuds Disconnected");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [currentlySpeakingId, setCurrentlySpeakingId] = useState<number | null>(null);
+  const [ws, setWs] = useState<WebSocket | null>(null);
   const deviceRef = useRef<any>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  useEffect(() => {
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const socket = new WebSocket(`${protocol}://${window.location.host}`);
+    
+    socket.onopen = () => {                
+        console.log('Connected to Audio WS');
+        setConnectionMessage("🎧 Keira Live Connected");
+    };
+    
+    socket.onerror = (e) => console.error('Audio WS error:', e);
+    
+    socket.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.audio) {
+            // Play back PCM audio chunk
+            const audioData = Uint8Array.from(atob(msg.audio), c => c.charCodeAt(0));
+            if (!audioCtxRef.current) audioCtxRef.current = new AudioContext({ sampleRate: 16000 });
+            
+            const buffer = audioCtxRef.current.createBuffer(1, audioData.length / 2, 16000);
+            const channel = buffer.getChannelData(0);
+            const view = new DataView(audioData.buffer);
+            for (let i = 0; i < audioData.length / 2; i++) {
+                channel[i] = view.getInt16(i * 2, true) / 32768;
+            }
+            const source = audioCtxRef.current.createBufferSource();
+            source.buffer = buffer;
+            source.connect(audioCtxRef.current.destination);
+            source.start();
+        }
+    };
+    
+    setWs(socket);
+
+    // Setup input audio streaming
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        const inputCtx = new AudioContext({ sampleRate: 16000 });
+        const source = inputCtx.createMediaStreamSource(stream);
+        const processor = inputCtx.createScriptProcessor(4096, 1, 1);
+        source.connect(processor);
+        processor.connect(inputCtx.destination);
+        
+        processor.onaudioprocess = (e) => {
+            const float32 = e.inputBuffer.getChannelData(0);
+            const int16 = new Int16Array(float32.length);
+            for (let i = 0; i < float32.length; i++) {
+                int16[i] = float32[i] * 32768;
+            }
+            const base64 = btoa(String.fromCharCode(...new Uint8Array(int16.buffer)));
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ audio: base64 }));
+            }
+        };
+    });
+
+    return () => socket.close();
+  }, []);
 
   useEffect(() => {
     const autoConnect = async () => {
@@ -167,11 +226,18 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userMessage }),
       });
+      
       const data = await response.json();
       const botId = Date.now() + 1;
+      
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to get AI response");
+      }
+      
       setMessages(prev => [...prev, { id: botId, text: data.response, sender: 'bot', citations: data.citations }]);
       if (!data.citations) speak(data.response, botId);
     } catch (e) {
+      console.error("Chat error:", e);
       const botId = Date.now() + 1;
       if (userMessage.startsWith("[KEIRA]")) {
            const botText = "[MODE: ONLINE KEIRA (SIMULATED)] -> Mumbai mein mausam suhana hai! Halka nasha aur chai ki chuski.";
