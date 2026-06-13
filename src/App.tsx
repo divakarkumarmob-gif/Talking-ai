@@ -51,11 +51,19 @@ export default function App() {
       let device;
       
       // Try to get already authorized devices first
-      const devices = await bluetooth.getDevices();
-      if (devices.length > 0) {
-        setConnectionMessage("🔄 Detected existing device, connecting...");
-        device = devices[0]; // Connect to the first authorized device found
-      } else {
+      if (typeof bluetooth.getDevices === 'function') {
+        try {
+          const devices = await bluetooth.getDevices();
+          if (devices.length > 0) {
+            setConnectionMessage("🔄 Detected existing device, connecting...");
+            device = devices[0]; // Connect to the first authorized device found
+          }
+        } catch (e) {
+          console.warn("getDevices API call failed (might be unsupported or require user interaction), proceeding to requestDevice", e);
+        }
+      }
+      
+      if (!device) {
         setConnectionMessage("⏳ Scanning for QP Earbuds over BLE...");
         device = await bluetooth.requestDevice({
           acceptAllDevices: true,
