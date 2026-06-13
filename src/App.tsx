@@ -13,16 +13,20 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [battery, setBattery] = useState<number | null>(null);
   const [isScanning, setIsScanning] = useState(false);
-  const [connectionMessage, setConnectionMessage] = useState("❌ Earbuds Disconnected");
+  const [connectionMessage, setConnectionMessage] = useState("❌ Offline");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [currentlySpeakingId, setCurrentlySpeakingId] = useState<number | null>(null);
-  const [ws, setWs] = useState<WebSocket | null>(null);
+  const [status, setStatus] = useState<'idle' | 'active' | 'offline'>('idle');
+  
+  const wsRef = useRef<WebSocket | null>(null);
   const deviceRef = useRef<any>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);    // Track streaming state
+  const audioCtxRef = useRef<AudioContext | null>(null);
   const aiStreamingRef = useRef(false);
   const aiStreamingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const audioQueueRef = useRef<AudioBuffer[]>([]);
   const nextStartTimeRef = useRef(0);
+  const lastAudioTimeRef = useRef(Date.now());
+  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const playNextChunk = () => {
     if (audioQueueRef.current.length === 0 || !audioCtxRef.current) return;
@@ -43,9 +47,7 @@ export default function App() {
     const startTime = Math.max(audioCtxRef.current.currentTime, nextStartTimeRef.current);
     source.start(startTime);
     nextStartTimeRef.current = startTime + buffer.duration;
-  };
-
-  const startAudioStreaming = (socket: WebSocket) => {
+  };  const startAudioStreaming = (socket: WebSocket) => {
     navigator.mediaDevices.getUserMedia({ 
       audio: { 
         echoCancellation: true, 
@@ -53,7 +55,7 @@ export default function App() {
         autoGainControl: true 
       } 
     }).then(stream => {
-        const inputCtx = new AudioContext({ sampleRate: 16000 });
+        const inputCtx = new AudioContext({ sampleRate: 24000 });
         const source = inputCtx.createMediaStreamSource(stream);
         
         // Low-pass filter to reduce high-frequency noise
@@ -107,40 +109,47 @@ export default function App() {
     });
   };
 
-  useEffect(() => {
+  const disconnectSession = () => {
+      if (wsRef.current) {
+          wsRef.current.close();
+          wsRef.current = null;
+      }
+      setStatus('idle');
+      setConnectionMessage("❌ Offline");
+  };
+
+  const connectSession = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const socket = new WebSocket(`${protocol}://${window.location.host}`);
     
     socket.onopen = () => {                
         console.log('Connected to Audio WS');
         setConnectionMessage("🎧 Keira Live Connected");
+        setStatus('active');
+        lastAudioTimeRef.current = Date.now();
         startAudioStreaming(socket);
     };
-    
-    socket.onerror = (e) => console.error('Audio WS error:', e);
     
     socket.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
         if (msg.audio) {
-            // Stop any local TTS if server sends audio
+            lastAudioTimeRef.current = Date.now();
             window.speechSynthesis.cancel();
             setIsSpeaking(false);
             setCurrentlySpeakingId(null);
 
-            // Update AI streaming state
             aiStreamingRef.current = true;
             if (aiStreamingTimeoutRef.current) clearTimeout(aiStreamingTimeoutRef.current);
             aiStreamingTimeoutRef.current = setTimeout(() => aiStreamingRef.current = false, 500);
 
-            // Play back PCM audio chunk
             const audioData = Uint8Array.from(atob(msg.audio), c => c.charCodeAt(0));
             if (!audioCtxRef.current) {
-                audioCtxRef.current = new AudioContext({ sampleRate: 16000 });
+                audioCtxRef.current = new AudioContext({ sampleRate: 24000 });
                 nextStartTimeRef.current = audioCtxRef.current.currentTime;
             }
             if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
             
-            const buffer = audioCtxRef.current.createBuffer(1, audioData.length / 2, 16000);
+            const buffer = audioCtxRef.current.createBuffer(1, audioData.length / 2, 24000);
             const channel = buffer.getChannelData(0);
             const view = new DataView(audioData.buffer);
             for (let i = 0; i < audioData.length / 2; i++) {
@@ -149,16 +158,37 @@ export default function App() {
             
             audioQueueRef.current.push(buffer);
             playNextChunk();
+        } else if (msg.transcript) {
+            const transcript = msg.transcript.toLowerCase();
+            if (["chup ho jao", "abb tum chup ho jao", "band ho jao"].some(phrase => transcript.includes(phrase))) {
+                disconnectSession();
+            }
         }
     };
     
-    setWs(socket);
+    wsRef.current = socket;
+  };
+
+  useEffect(() => {
+    if (status === 'active') {
+        silenceTimeoutRef.current = setInterval(() => {
+            if (Date.now() - lastAudioTimeRef.current > 120000) {
+                disconnectSession();
+            }
+        }, 5000);
+    } else {
+        if (silenceTimeoutRef.current) clearInterval(silenceTimeoutRef.current);
+    }
+    return () => {
+        if (silenceTimeoutRef.current) clearInterval(silenceTimeoutRef.current);
+    };
+  }, [status]);
 
 
-    return () => socket.close();
+
+  useEffect(() => {
+    connectSession();
   }, []);
-
-
 
   useEffect(() => {
     const autoConnect = async () => {
@@ -191,6 +221,9 @@ export default function App() {
       const synth = window.speechSynthesis;
       synth.cancel(); // Stop any currently speaking text
       const utterance = new SpeechSynthesisUtterance(text);
+      utterance.pitch = 1.2; // Increase pitch for sweetness
+      utterance.rate = 1.2; // Make it conversational
+
       const voices = synth.getVoices();
       
       // Prioritize clear English voice. Filter out all non-English voices.
