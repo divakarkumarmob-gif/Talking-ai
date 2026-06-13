@@ -100,14 +100,21 @@ export default function App() {
 
       deviceRef.current = device;
       const server = await device.gatt!.connect();
-      const service = await server.getPrimaryService('battery_service');
-      const characteristic = await service.getCharacteristic('battery_level');
-      const value = await characteristic.readValue();
-      const batteryLevel = value.getUint8(0);
+      
+      try {
+        const service = await server.getPrimaryService('battery_service');
+        const characteristic = await service.getCharacteristic('battery_level');
+        const value = await characteristic.readValue();
+        const batteryLevel = value.getUint8(0);
+        setBattery(batteryLevel);
+        setConnectionMessage(`🎧 QP Earbuds Connected | Battery: ${batteryLevel}%`);
+      } catch (e) {
+        console.warn("Battery service not found, connecting anyway.", e);
+        setBattery(null);
+        setConnectionMessage("🎧 QP Earbuds Connected");
+      }
       
       setIsConnected(true);
-      setBattery(batteryLevel);
-      setConnectionMessage(`🎧 QP Earbuds Connected (BLE) | Battery: ${batteryLevel}%`);
       
       device.addEventListener('gattserverdisconnected', () => {
         setIsConnected(false);
