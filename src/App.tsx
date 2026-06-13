@@ -91,37 +91,45 @@ export default function App() {
       }
       
       if (!device) {
-        setConnectionMessage("⏳ Scanning for QP Earbuds over BLE...");
+        setConnectionMessage("⏳ Scanning for Bluetooth devices...");
         device = await bluetooth.requestDevice({
-          acceptAllDevices: true,
-          optionalServices: ['battery_service']
+          acceptAllDevices: true
         });
       }
 
       deviceRef.current = device;
-      const server = await device.gatt!.connect();
       
-      try {
-        const service = await server.getPrimaryService('battery_service');
-        const characteristic = await service.getCharacteristic('battery_level');
-        const value = await characteristic.readValue();
-        const batteryLevel = value.getUint8(0);
-        setBattery(batteryLevel);
-        setConnectionMessage(`🎧 QP Earbuds Connected | Battery: ${batteryLevel}%`);
-      } catch (e) {
-        console.warn("Battery service not found, connecting anyway.", e);
-        setBattery(null);
-        setConnectionMessage("🎧 QP Earbuds Connected");
+      // If GATT is available, attempt to connect
+      if (device.gatt) {
+        const server = await device.gatt.connect();
+        
+        try {
+          const service = await server.getPrimaryService('battery_service');
+          const characteristic = await service.getCharacteristic('battery_level');
+          const value = await characteristic.readValue();
+          const batteryLevel = value.getUint8(0);
+          setBattery(batteryLevel);
+          setConnectionMessage(`🎧 Connected | Battery: ${batteryLevel}%`);
+        } catch (e) {
+          console.warn("Battery service not supported on this device, sticking to connected state.", e);
+          setBattery(null);
+          setConnectionMessage("🎧 Bluetooth Device Connected");
+        }
+      } else {
+        // Fallback for non-GATT connected devices
+        setConnectionMessage("🎧 Bluetooth Device Selected");
       }
       
       setIsConnected(true);
       
-      device.addEventListener('gattserverdisconnected', () => {
-        setIsConnected(false);
-        setBattery(null);
-        setConnectionMessage("❌ Earbuds Disconnected");
-        deviceRef.current = null;
-      });
+      if (device.gatt) {
+        device.addEventListener('gattserverdisconnected', () => {
+          setIsConnected(false);
+          setBattery(null);
+          setConnectionMessage("❌ Device Disconnected");
+          deviceRef.current = null;
+        });
+      }
     } catch (error: any) {
       console.error("Bluetooth connection failed:", error);
       if (error.name === 'SecurityError') {
