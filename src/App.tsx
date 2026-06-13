@@ -21,33 +21,13 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const deviceRef = useRef<any>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const aiStreamingRef = useRef(false);
   const aiStreamingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const audioQueueRef = useRef<AudioBuffer[]>([]);
-  const nextStartTimeRef = useRef(0);
   const lastAudioTimeRef = useRef(Date.now());
   const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const playNextChunk = () => {
-    if (audioQueueRef.current.length === 0 || !audioCtxRef.current) return;
-    const buffer = audioQueueRef.current.shift();
-    if (!buffer) return;
-    const source = audioCtxRef.current.createBufferSource();
-    source.buffer = buffer;
-
-    // Add high-pass filter to thin out the voice
-    const highPass = audioCtxRef.current.createBiquadFilter();
-    highPass.type = 'highpass';
-    highPass.frequency.value = 750; // Even thinner voice
-
-    source.connect(highPass);
-    highPass.connect(audioCtxRef.current.destination);
-    
-    // Schedule based on previous chunk finish time
-    const startTime = Math.max(audioCtxRef.current.currentTime, nextStartTimeRef.current);
-    source.start(startTime);
-    nextStartTimeRef.current = startTime + buffer.duration;
-  };  const startAudioStreaming = (socket: WebSocket) => {
+  const startAudioStreaming = (socket: WebSocket) => {
     navigator.mediaDevices.getUserMedia({ 
       audio: { 
         echoCancellation: true, 
@@ -145,19 +125,21 @@ export default function App() {
             const audioData = Uint8Array.from(atob(msg.audio), c => c.charCodeAt(0));
             if (!audioCtxRef.current) {
                 audioCtxRef.current = new AudioContext({ sampleRate: 24000 });
-                nextStartTimeRef.current = audioCtxRef.current.currentTime;
+                await audioCtxRef.current.audioWorklet.addModule('/audio-processor.js');
+                workletNodeRef.current = new AudioWorkletNode(audioCtxRef.current, 'audio-processor');
+                workletNodeRef.current.connect(audioCtxRef.current.destination);
             }
             if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
             
-            const buffer = audioCtxRef.current.createBuffer(1, audioData.length / 2, 24000);
-            const channel = buffer.getChannelData(0);
+            const float32Data = new Float32Array(audioData.length / 2);
             const view = new DataView(audioData.buffer);
             for (let i = 0; i < audioData.length / 2; i++) {
-                channel[i] = view.getInt16(i * 2, true) / 32768;
+                float32Data[i] = view.getInt16(i * 2, true) / 32768;
             }
             
-            audioQueueRef.current.push(buffer);
-            playNextChunk();
+            if (workletNodeRef.current) {
+                workletNodeRef.current.port.postMessage(float32Data);
+            }
         } else if (msg.transcript) {
             const transcript = msg.transcript.toLowerCase();
             if (["chup ho jao", "abb tum chup ho jao", "band ho jao"].some(phrase => transcript.includes(phrase))) {
