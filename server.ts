@@ -39,9 +39,9 @@ async function startServer() {
         config: {
           responseModalities: [Modality.AUDIO], // Must be [Modality.AUDIO]
           speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } },
           },
-          systemInstruction: "You are Keira, a friendly, natural-sounding AI assistant. Keep responses conversational and fluid. Speak naturally like a human.",
+          systemInstruction: "You are Keira, a friendly, natural-sounding AI assistant. Always respond in natural, conversational Hinglish (a mix of Hindi and English) as if you are talking to a friend. Keep responses short, fluid, and like a human conversation.",
         },
       });
 
@@ -49,7 +49,7 @@ async function startServer() {
         const payload = JSON.parse(data.toString());
         if (payload.audio) {
             session.sendRealtimeInput({
-                audio: { data: payload.audio, mimeType: "audio/pcm;rate=16000" },
+                audio: { data: payload.audio, mimeType: "audio/pcm;rate=24000" },
             });
         }
     });

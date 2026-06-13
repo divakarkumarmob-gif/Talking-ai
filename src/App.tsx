@@ -20,42 +20,9 @@ export default function App() {
   const deviceRef = useRef<any>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
 
-  useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = new WebSocket(`${protocol}://${window.location.host}`);
-    
-    socket.onopen = () => {                
-        console.log('Connected to Audio WS');
-        setConnectionMessage("🎧 Keira Live Connected");
-    };
-    
-    socket.onerror = (e) => console.error('Audio WS error:', e);
-    
-    socket.onmessage = async (event) => {
-        const msg = JSON.parse(event.data);
-        if (msg.audio) {
-            // Play back PCM audio chunk
-            const audioData = Uint8Array.from(atob(msg.audio), c => c.charCodeAt(0));
-            if (!audioCtxRef.current) audioCtxRef.current = new AudioContext({ sampleRate: 16000 });
-            
-            const buffer = audioCtxRef.current.createBuffer(1, audioData.length / 2, 16000);
-            const channel = buffer.getChannelData(0);
-            const view = new DataView(audioData.buffer);
-            for (let i = 0; i < audioData.length / 2; i++) {
-                channel[i] = view.getInt16(i * 2, true) / 32768;
-            }
-            const source = audioCtxRef.current.createBufferSource();
-            source.buffer = buffer;
-            source.connect(audioCtxRef.current.destination);
-            source.start();
-        }
-    };
-    
-    setWs(socket);
-
-    // Setup input audio streaming
+  const startAudioStreaming = (socket: WebSocket) => {
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-        const inputCtx = new AudioContext({ sampleRate: 16000 });
+        const inputCtx = new AudioContext({ sampleRate: 24000 });
         const source = inputCtx.createMediaStreamSource(stream);
         const processor = inputCtx.createScriptProcessor(4096, 1, 1);
         source.connect(processor);
@@ -72,7 +39,45 @@ export default function App() {
                 socket.send(JSON.stringify({ audio: base64 }));
             }
         };
+    }).catch(err => {
+      console.error("Microphone access denied:", err);
+      setConnectionMessage("❌ Mic Access Denied");
     });
+  };
+
+  useEffect(() => {
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const socket = new WebSocket(`${protocol}://${window.location.host}`);
+    
+    socket.onopen = () => {                
+        console.log('Connected to Audio WS');
+        setConnectionMessage("🎧 Keira Live Connected");
+        startAudioStreaming(socket);
+    };
+    
+    socket.onerror = (e) => console.error('Audio WS error:', e);
+    
+    socket.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.audio) {
+            // Play back PCM audio chunk
+            const audioData = Uint8Array.from(atob(msg.audio), c => c.charCodeAt(0));
+            if (!audioCtxRef.current) audioCtxRef.current = new AudioContext({ sampleRate: 24000 });
+            
+            const buffer = audioCtxRef.current.createBuffer(1, audioData.length / 2, 24000);
+            const channel = buffer.getChannelData(0);
+            const view = new DataView(audioData.buffer);
+            for (let i = 0; i < audioData.length / 2; i++) {
+                channel[i] = view.getInt16(i * 2, true) / 32768;
+            }
+            const source = audioCtxRef.current.createBufferSource();
+            source.buffer = buffer;
+            source.connect(audioCtxRef.current.destination);
+            source.start();
+        }
+    };
+    
+    setWs(socket);
 
     return () => socket.close();
   }, []);

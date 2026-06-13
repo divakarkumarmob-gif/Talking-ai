@@ -1,6 +1,6 @@
 {
   "name": "KEIRA/NOW Hybrid Earbud Assistant",
   "description": "A hybrid smart assistant interface for earbud systems, supporting offline and online modes.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
